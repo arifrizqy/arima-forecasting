@@ -1,97 +1,202 @@
 import mysql.connector
-import pandas as pd
 import streamlit as st
-
+import pandas as pd
+import numpy as np
+import datetime
+import plotly.express as px
+import plotly.graph_objects as go
 from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.stattools import adfuller, acf, pacf
 
-def get_connection():
-    return mysql.connector.connect(
-        host="localhost",
-        user="arifrizqy",
-        password="@Arriz2401",
-        database="forecasting_db"
-      )
+def connect_to_db():
+	return mysql.connector.connect(
+		host="localhost",
+		user="arifrizqy",
+		password="@Arriz2401",
+		database="forecasting_db"
+	)
 
 def fetch_data():
-    conn = get_connection()
-    query = "SELECT * FROM forecast_data ORDER BY date"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
+	conn = connect_to_db()
+	query = "SELECT date, value FROM forecast_data"
+	data = pd.read_sql(query, conn)
+	conn.close()
+	return data
 
-def add_data(date, value):
-    conn = get_connection()
-    cursor = conn.cursor()
-    query = "INSERT INTO forecast_data (date, value) VALUES (%s, %s)"
-    cursor.execute(query, (date, value))
-    conn.commit()
-    conn.close()
+def check_stationarity(data):
+  return adfuller(data)
 
-def delete_data(row_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    query = "DELETE FROM forecast_data WHERE id = %s"
-    cursor.execute(query, (row_id,))
-    conn.commit()
-    conn.close()
+st.set_page_config(page_title="ARIMA Forecasting", layout="wide")
+st.title("Aplikasi Forecasting Data Metode ARIMA (AutoRegresive Integrated Moving Average)")
 
-def get_time_series():
-    df = fetch_data()
-    df['date'] = pd.to_datetime(df['date'])
-    df.set_index('date', inplace=True)
-    return df['value']
+if "p_val" not in st.session_state:
+    st.session_state.p_val = 0  # Nilai default P
+if "d_val" not in st.session_state:
+    st.session_state.d_val = 0  # Nilai default D
+if "q_val" not in st.session_state:
+    st.session_state.q_val = 0  # Nilai default Q
 
-def train_arima(ts, order=(1, 1, 1)):
-    model = ARIMA(ts, order=order)
-    model_fit = model.fit()
-    return model_fit
+tab1, tab2, tab3 = st.tabs(["Perumusan Model", "Forecasting", "About"])
 
-def forecast(model, steps=12):
-    forecast = model.forecast(steps=steps)
-    return forecast
+with tab1:
+	st.header("Perumusan Model")
+
+	col1, col2 = st.columns([1, 3])
+	with col1:
+		st.subheader("Data Actual")
+		data = fetch_data()
+		st.dataframe(data)
   
-def predict(model, end=0, start=0):
-    predict = model.predict(start=start, end=end)
-    return predict
+	with col2:
+		st.subheader("Form Data")
 
-st.title("Aplikasi Peramalan dengan ARIMA")
-st.header("Data")
-df = fetch_data()
-st.write(df)
+		with st.form(key="form1"):
+			col21, col22 = st.columns([1, 1])
+			with col21:
+				date = st.date_input("Pilih tanggal:")
 
-st.subheader("Tambah Data")
-date = st.date_input("Tanggal")
-value = st.number_input("Nilai", step=1.0)
-if st.button("Tambah"):
-    add_data(date, value)
-    st.success("Data berhasil ditambahkan!")
+			with col22:
+				value = st.number_input("Masukkan nilai actual:")
 
-st.subheader("Hapus Data")
-id_to_delete = st.number_input("ID Data untuk dihapus", step=1)
-if st.button("Hapus"):
-    delete_data(id_to_delete)
-    st.success("Data berhasil dihapus!")
+			store_to_db = st.form_submit_button("Simpan Data")
 
-st.subheader("Data Actual")
-ts = get_time_series()
-st.line_chart(ts)
+		st.subheader("Plot Data Actual")
+		st.line_chart(data.set_index("date")["value"])
 
-st.subheader("Hasil Predict")
-ts = get_time_series()
-model = train_arima(ts)
-predict_values = predict(model, len(ts)-1)
-st.line_chart(predict_values)
+		res = check_stationarity(data['value'])
+  
+		col23, col24 = st.columns([1, 1.5])
+		with col23:
+			st.write(f"P-Value : {res[1]:.10f}")
+			st.write(f"Differencing : {st.session_state.d_val}")
+  
+		with col24:
+			if res[1] > 0.05:
+				st.warning("Data belum stationer")
+			else:
+				st.success("Data stationer")
 
-st.subheader("Hasil Peramalan")
-ts = get_time_series()
-model = train_arima(ts)
-forecast_values = forecast(model)
-st.line_chart(forecast_values)
+	if res[1] > 0.05:
+		st.subheader("Stationeritas")
+		diff_data = data["value"].diff().dropna()
+		if st.button("Stationerkan sampai optimal"):
+			while res[1] > 0.05:
+				st.session_state.d_val += 1
+				res = check_stationarity(diff_data)
+			
+			col3, col4 = st.columns([1, 2.5])
+			with col3:
+				st.write(f"P-Value : {res[1]:.10f}")
+				st.write(f"Differencing : {st.session_state.d_val}")
 
-combined_df = pd.DataFrame({
-                "Series": df['date'],
-                "Aktual": df['value'],
-                "Forecast": predict_values
-              })
+			with col4:
+				if res[1] > 0.05:
+					st.warning("Data belum stationer")
+				else:
+					st.success("Data stationer")
 
-st.plotly_chart(combined_df)
+			st.line_chart(diff_data)
+
+	st.subheader("Plot ACF dan PACF")
+	# Hitung nilai ACF dan PACF
+	acf_values = acf(data["value"].dropna(), fft=False, nlags=20)
+	pacf_values = pacf(data["value"].dropna(), nlags=20)
+
+	# Plot ACF menggunakan garis dengan spike
+	fig_acf = go.Figure()
+	fig_acf.add_trace(go.Scatter(x=list(range(len(acf_values))),
+															y=acf_values,
+															mode="lines+markers",
+															name="ACF"))
+	for i in range(len(acf_values)):
+			fig_acf.add_trace(go.Scatter(x=[i, i], y=[0, acf_values[i]], mode="lines", line=dict(color="blue", width=1)))
+
+	fig_acf.update_layout(title="Autocorrelation Function (ACF)",
+												xaxis_title="Lag",
+												yaxis_title="Correlation",
+												showlegend=False)
+
+	# Plot PACF menggunakan garis dengan spike
+	fig_pacf = go.Figure()
+	fig_pacf.add_trace(go.Scatter(x=list(range(len(pacf_values))),
+																y=pacf_values,
+																mode="lines+markers",
+																name="PACF"))
+	for i in range(len(pacf_values)):
+			fig_pacf.add_trace(go.Scatter(x=[i, i], y=[0, pacf_values[i]], mode="lines", line=dict(color="blue", width=1)))
+
+	fig_pacf.update_layout(title="Partial Autocorrelation Function (PACF)",
+												xaxis_title="Lag",
+												yaxis_title="Correlation",
+												showlegend=False)
+
+	# Tampilkan di Streamlit
+	col5, col6 = st.columns([1, 1])
+	with col5:
+		st.plotly_chart(fig_acf)
+	with col6:
+		st.plotly_chart(fig_pacf)
+
+	st.markdown("""
+### Tips:
+Untuk memilih nilai p dan q dari plot ACF dan PACF diatas untuk pemodelan ARIMA(p, d, q)
+- Nilai q dapat ditentukan dengan cara memeriksa lag tempat ACF pertama kali memotong garis nol.
+- Nilai p dapat ditentukan dengan cara memeriksa lag tempat PACF pertama kali memotong garis nol.
+""")
+
+with tab2:
+	st.header("Forecasting")
+
+	col7, col8 = st.columns([1, 2])
+	with col7:
+		st.session_state.p_val = int(st.number_input(
+        "Masukkan nilai untuk parameter P:",
+        min_value=0,
+        step=1,
+        value=st.session_state.p_val,
+        key="p_input"
+    ))
+  
+		st.session_state.d_val = int(st.number_input(
+        "Masukkan nilai untuk parameter D:",
+        min_value=0,
+        step=1,
+        value=st.session_state.d_val,
+        key="d_input"
+    ))
+  
+		st.session_state.q_val = int(st.number_input(
+        "Masukkan nilai untuk parameter Q:",
+        min_value=0,
+        step=1,
+        value=st.session_state.q_val,
+        key="q_input"
+    ))
+
+		calculate = st.button("Hitung")
+	with col8:
+		if calculate:
+			model = ARIMA(data["value"], order=(st.session_state.p_val, st.session_state.d_val, st.session_state.q_val))
+			fit_model = model.fit()
+
+			st.write(fit_model.summary())
+
+			forecast = fit_model.forecast(steps=12)
+			st.line_chart(forecast)
+			predict = fit_model.predict()
+
+			df_plot = pd.DataFrame({
+				"Date": data['date'],
+				"Actual": data['value'],
+				"Predict": predict
+			})
+
+			fig = px.line(
+				df_plot,
+				x="Date",
+				y=["Actual", "Predict"],
+				labels={"value": "Values", "Date": "Date"},
+				title="Plot Actual vs Predict"
+			)
+
+			st.plotly_chart(fig)
