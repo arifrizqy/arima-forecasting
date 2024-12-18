@@ -18,23 +18,55 @@ def connect_to_db():
 
 def fetch_data():
 	conn = connect_to_db()
-	query = "SELECT date, value FROM forecast_data"
+	query = "SELECT id, date, value FROM forecast_data"
 	data = pd.read_sql(query, conn)
 	conn.close()
 	return data
 
+def insert_data(date, value):
+    connection = connect_to_db()
+    cursor = connection.cursor()
+    try:
+        query = "INSERT INTO forecast_data (date, value) VALUES (%s, %s)"
+        cursor.execute(query, (date, value))
+        connection.commit()
+        st.success("Data berhasil disimpan!")
+    except Exception as e:
+        st.error(f"Terjadi kesalahan: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+def del_data(id):
+    connection = connect_to_db()
+    cursor = connection.cursor()
+    try:
+        query = f"DELETE from forecast_data WHERE id={id}"
+        cursor.execute(query)
+        connection.commit()
+        st.success("Data berhasil dihapus!")
+    except Exception as e:
+        st.error(f"Terjadi kesalahan: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
 def check_stationarity(data):
   return adfuller(data)
+
+def calculate_mape(actual, predict):
+    actual = np.array(actual)
+    predict = np.array(predict)
+    non_zero_actual = actual != 0
+    mape = np.mean(np.abs((actual[non_zero_actual] - predict[non_zero_actual]) / actual[non_zero_actual])) * 100
+    return mape
 
 st.set_page_config(page_title="ARIMA Forecasting", layout="wide")
 st.title("Aplikasi Forecasting Data Metode ARIMA (AutoRegresive Integrated Moving Average)")
 
-if "p_val" not in st.session_state:
-    st.session_state.p_val = 0  # Nilai default P
-if "d_val" not in st.session_state:
-    st.session_state.d_val = 0  # Nilai default D
-if "q_val" not in st.session_state:
-    st.session_state.q_val = 0  # Nilai default Q
+p_val = 0
+d_val = 0
+q_val = 0
 
 tab1, tab2, tab3 = st.tabs(["Perumusan Model", "Forecasting", "About"])
 
@@ -45,7 +77,14 @@ with tab1:
 	with col1:
 		st.subheader("Data Actual")
 		data = fetch_data()
-		st.dataframe(data)
+		st.write(data)
+  
+		with st.form(key="form_del"):
+			id = int(st.number_input("Masukkan ID data yang akan dihapus", min_value=0, step=1))
+			del_btn = st.form_submit_button("Hapus Data")
+
+			if del_btn:
+				del_data(id)
   
 	with col2:
 		st.subheader("Form Data")
@@ -56,9 +95,11 @@ with tab1:
 				date = st.date_input("Pilih tanggal:")
 
 			with col22:
-				value = st.number_input("Masukkan nilai actual:")
+				value = st.number_input("Masukkan nilai actual:", min_value=0, step=1)
 
 			store_to_db = st.form_submit_button("Simpan Data")
+			if store_to_db:
+				insert_data(date, value)
 
 		st.subheader("Plot Data Actual")
 		st.line_chart(data.set_index("date")["value"])
@@ -68,7 +109,7 @@ with tab1:
 		col23, col24 = st.columns([1, 1.5])
 		with col23:
 			st.write(f"P-Value : {res[1]:.10f}")
-			st.write(f"Differencing : {st.session_state.d_val}")
+			st.write(f"Differencing : {d_val}")
   
 		with col24:
 			if res[1] > 0.05:
@@ -81,13 +122,13 @@ with tab1:
 		diff_data = data["value"].diff().dropna()
 		if st.button("Stationerkan sampai optimal"):
 			while res[1] > 0.05:
-				st.session_state.d_val += 1
+				d_val += 1
 				res = check_stationarity(diff_data)
 			
 			col3, col4 = st.columns([1, 2.5])
 			with col3:
 				st.write(f"P-Value : {res[1]:.10f}")
-				st.write(f"Differencing : {st.session_state.d_val}")
+				st.write(f"Differencing : {d_val}")
 
 			with col4:
 				if res[1] > 0.05:
@@ -149,39 +190,38 @@ with tab2:
 
 	col7, col8 = st.columns([1, 2])
 	with col7:
-		st.session_state.p_val = int(st.number_input(
+		p_val = int(st.number_input(
         "Masukkan nilai untuk parameter P:",
         min_value=0,
         step=1,
-        value=st.session_state.p_val,
         key="p_input"
     ))
   
-		st.session_state.d_val = int(st.number_input(
+		d_val = int(st.number_input(
         "Masukkan nilai untuk parameter D:",
         min_value=0,
         step=1,
-        value=st.session_state.d_val,
         key="d_input"
     ))
   
-		st.session_state.q_val = int(st.number_input(
+		q_val = int(st.number_input(
         "Masukkan nilai untuk parameter Q:",
         min_value=0,
         step=1,
-        value=st.session_state.q_val,
         key="q_input"
     ))
 
 		calculate = st.button("Hitung")
 	with col8:
 		if calculate:
-			model = ARIMA(data["value"], order=(st.session_state.p_val, st.session_state.d_val, st.session_state.q_val))
+			model = ARIMA(data["value"], order=(p_val, d_val, q_val))
 			fit_model = model.fit()
 
 			st.write(fit_model.summary())
 
 			forecast = fit_model.forecast(steps=12)
+
+			st.subheader("Plot Forecast")
 			st.line_chart(forecast)
 			predict = fit_model.predict()
 
@@ -200,3 +240,6 @@ with tab2:
 			)
 
 			st.plotly_chart(fig)
+
+			mape_val = calculate_mape(df_plot["Actual"], df_plot["Predict"])
+			st.write(f"Nilai MAPE: {mape_val}")
